@@ -1,5 +1,6 @@
+mport os
+
 import json
-import os 
 
 import time
 
@@ -13,19 +14,33 @@ import requests
 
 from bs4 import BeautifulSoup
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+DATA_FILE = Path("found.json")
 
 SEARCHES = [
 
-    '"часы Янтарь" настенные',
+    '"Янтарь банжо" часы',
 
-    '"настенные часы Янтарь"',
+    '"Янтарь" "банжо" часы купить',
 
-    '"Янтарь" "кварцевые" часы',
+    '"Янтарь" настенные часы СССР',
 
-    '"Янтарь" часы СССР',
+    '"Янтарь" кварцевые часы СССР',
 
-    '"Янтарь банжо"',
+    '"Янтарь" часы СССР аукцион',
+
+    '"Yantar" wall clock USSR',
+
+    '"Yantar" banjo clock',
+
+    '"Yantar" quartz wall clock',
+
+    '"Янтарь" часы купить',
+
+    '"Янтарь" часы коллекционные',
 
 ]
 
@@ -35,29 +50,47 @@ SITES = [
 
     "meshok.net",
 
+    "auction.ru",
+
     "ebay.com",
+
+    "etsy.com",
+
+    "catawiki.com",
+
+    "delcampe.net",
 
     "allegro.pl",
 
-    "olx.pl",
+    "kleinanzeigen.de",
+
+    "leboncoin.fr",
+
+    "todocoleccion.net",
+
+    "ricardo.ch",
+
+    "vinted.fr",
+
+    "facebook.com",
+
+    "instagram.com",
 
 ]
 
-DATA_FILE = Path("found.json")
-
 def load_found():
 
-    if DATA_FILE.exists():
+    if not DATA_FILE.exists():
 
-        try:
+        return {}
 
-            return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    try:
 
-        except Exception:
+        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
 
-            pass
+    except Exception:
 
-    return {}
+        return {}
 
 def save_found(found):
 
@@ -65,37 +98,17 @@ def save_found(found):
 
         json.dumps(found, ensure_ascii=False, indent=2),
 
-        encoding="utf-8"
+        encoding="utf-8",
 
     )
 
-def get_chat_id():
+def send_telegram(text):
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    if not BOT_TOKEN or not CHAT_ID:
 
-    response = requests.get(url, timeout=30)
+        print("Не задан TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
 
-    response.raise_for_status()
-
-    data = response.json()
-
-    if not data.get("ok"):
-
-        return None
-
-    updates = data.get("result", [])
-
-    for update in reversed(updates):
-
-        message = update.get("message")
-
-        if message and message.get("chat"):
-
-            return message["chat"]["id"]
-
-    return None
-
-def send_telegram(chat_id, text):
+        return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
@@ -105,7 +118,7 @@ def send_telegram(chat_id, text):
 
         json={
 
-            "chat_id": chat_id,
+            "chat_id": CHAT_ID,
 
             "text": text,
 
@@ -133,9 +146,11 @@ def search_web(query):
 
         "User-Agent": (
 
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 "
 
-            "AppleWebKit/605.1.15 Safari/605.1"
+            "like Mac OS X) AppleWebKit/605.1.15 "
+
+            "Version/17.0 Mobile/15E148 Safari/604.1"
 
         )
 
@@ -147,7 +162,7 @@ def search_web(query):
 
         headers=headers,
 
-        timeout=30
+        timeout=30,
 
     )
 
@@ -161,8 +176,6 @@ def search_web(query):
 
         link = item.select_one(".result__a")
 
-        snippet = item.select_one(".result__snippet")
-
         if not link:
 
             continue
@@ -171,23 +184,35 @@ def search_web(query):
 
         href = link.get("href", "")
 
-        if snippet:
+        snippet_el = item.select_one(".result__snippet")
 
-            description = snippet.get_text(" ", strip=True)
+        description = (
 
-        else:
+            snippet_el.get_text(" ", strip=True)
 
-            description = ""
+            if snippet_el
 
-        results.append({
+            else ""
 
-            "title": title,
+        )
 
-            "url": href,
+        if not href:
 
-            "description": description,
+            continue
 
-        })
+        results.append(
+
+            {
+
+                "title": title,
+
+                "url": href,
+
+                "description": description,
+
+            }
+
+        )
 
     return results
 
@@ -195,11 +220,15 @@ def looks_like_yantar(item):
 
     text = (
 
-        item["title"] + " " +
+        item.get("title", "")
 
-        item["description"] + " " +
+        + " "
 
-        item["url"]
+        + item.get("description", "")
+
+        + " "
+
+        + item.get("url", "")
 
     ).lower()
 
@@ -208,6 +237,8 @@ def looks_like_yantar(item):
         "янтарь",
 
         "yantar",
+
+        "yantarb",
 
         "yantarь",
 
@@ -223,35 +254,39 @@ def looks_like_yantar(item):
 
         "clock",
 
-        "zegar",
-
         "uhr",
+
+        "zegar",
 
     ]
 
-    return (
+    has_brand = any(word in text for word in good_words)
 
-        any(word in text for word in good_words)
+    has_clock = any(word in text for word in clock_words)
 
-        and any(word in text for word in clock_words)
-
-    )
+    return has_brand and has_clock
 
 def make_id(item):
 
     raw = item["url"] + item["title"]
 
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+
+        raw.encode("utf-8")
+
+    ).hexdigest()
 
 def main():
 
-    chat_id = get_chat_id()
+    if not BOT_TOKEN:
 
-    if not chat_id:
+        print("Ошибка: не найден TELEGRAM_BOT_TOKEN")
 
-        print("Не найден чат Telegram.")
+        return
 
-        print("Откройте @YantarPoiskBot и нажмите Старт.")
+    if not CHAT_ID:
+
+        print("Ошибка: не найден TELEGRAM_CHAT_ID")
 
         return
 
@@ -259,11 +294,15 @@ def main():
 
     new_items = []
 
-    for search in SEARCHES:
+    print("Начинаю поиск часов Янтарь...")
+
+    for query in SEARCHES:
+
+        print(f"Поиск: {query}")
 
         try:
 
-            results = search_web(search)
+            results = search_web(query)
 
         except Exception as error:
 
@@ -295,27 +334,27 @@ def main():
 
             new_items.append(item)
 
+        time.sleep(2)
+
     save_found(found)
 
     if not new_items:
 
         send_telegram(
 
-            chat_id,
+            "🕰 Проверка завершена.\n\n"
 
-            "🕰 Проверка завершена.\n"
-
-            "Новых настенных часов «Янтарь» не найдено."
+            "Новых объявлений с часами «Янтарь» не найдено."
 
         )
+
+        print("Новых объявлений нет.")
 
         return
 
     send_telegram(
 
-        chat_id,
-
-        f"🕰 Найдено новых объявлений: {len(new_items)}"
+        f"🕰 НАЙДЕНО НОВЫХ ОБЪЯВЛЕНИЙ: {len(new_items)}"
 
     )
 
@@ -335,11 +374,13 @@ def main():
 
         try:
 
-            send_telegram(chat_id, message)
+            send_telegram(message)
 
         except Exception as error:
 
             print(f"Ошибка Telegram: {error}")
+
+        time.sleep(1)
 
 if __name__ == "__main__":
 
