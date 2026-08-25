@@ -1,4 +1,4 @@
-mport os
+эmport os
 
 import json
 
