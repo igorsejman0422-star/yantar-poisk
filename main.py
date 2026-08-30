@@ -1,4 +1,5 @@
 import os
+
 import json
 
 import time
@@ -13,9 +14,9 @@ import requests
 
 from bs4 import BeautifulSoup
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 DATA_FILE = Path("found.json")
 
@@ -23,7 +24,7 @@ SEARCHES = [
 
     '"Янтарь банжо" часы',
 
-    '"Янтарь" "банжо" часы купить',
+    '"Янтарь" банжо часы купить',
 
     '"Янтарь" настенные часы СССР',
 
@@ -43,69 +44,11 @@ SEARCHES = [
 
 ]
 
-SITES = [
-
-    "avito.ru",
-
-    "meshok.net",
-
-    "auction.ru",
-
-    "ebay.com",
-
-    "etsy.com",
-
-    "catawiki.com",
-
-    "delcampe.net",
-
-    "allegro.pl",
-
-    "kleinanzeigen.de",
-
-    "leboncoin.fr",
-
-    "todocoleccion.net",
-
-    "ricardo.ch",
-
-    "vinted.fr",
-
-    "facebook.com",
-
-    "instagram.com",
-
-]
-
-def load_found():
-
-    if not DATA_FILE.exists():
-
-        return {}
-
-    try:
-
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-
-    except Exception:
-
-        return {}
-
-def save_found(found):
-
-    DATA_FILE.write_text(
-
-        json.dumps(found, ensure_ascii=False, indent=2),
-
-        encoding="utf-8",
-
-    )
-
 def send_telegram(text):
 
     if not BOT_TOKEN or not CHAT_ID:
 
-        print("Не задан TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
+        print("Ошибка: Telegram secrets не найдены")
 
         return
 
@@ -131,6 +74,8 @@ def send_telegram(text):
 
     response.raise_for_status()
 
+    print("Сообщение отправлено в Telegram")
+
 def search_web(query):
 
     url = (
@@ -145,9 +90,9 @@ def search_web(query):
 
         "User-Agent": (
 
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 "
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
 
-            "like Mac OS X) AppleWebKit/605.1.15 "
+            "AppleWebKit/605.1.15 "
 
             "Version/17.0 Mobile/15E148 Safari/604.1"
 
@@ -155,17 +100,25 @@ def search_web(query):
 
     }
 
-    response = requests.get(
+    try:
 
-        url,
+        response = requests.get(
 
-        headers=headers,
+            url,
 
-        timeout=30,
+            headers=headers,
 
-    )
+            timeout=30,
 
-    response.raise_for_status()
+        )
+
+        response.raise_for_status()
+
+    except Exception as error:
+
+        print(f"Ошибка поиска: {error}")
+
+        return []
 
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -173,7 +126,7 @@ def search_web(query):
 
     for item in soup.select(".result"):
 
-        link = item.select_one(".result__a")
+        link = item.select_one("a.result__a")
 
         if not link:
 
@@ -183,35 +136,29 @@ def search_web(query):
 
         href = link.get("href", "")
 
-        snippet_el = item.select_one(".result__snippet")
+        snippet = item.select_one(".result__snippet")
 
-        description = (
+        description = ""
 
-            snippet_el.get_text(" ", strip=True)
+        if snippet:
 
-            if snippet_el
+            description = snippet.get_text(" ", strip=True)
 
-            else ""
-
-        )
-
-        if not href:
+        if not href or not title:
 
             continue
 
-        results.append(
+        results.append({
 
-            {
+            "title": title,
 
-                "title": title,
+            "url": href,
 
-                "url": href,
+            "description": description,
 
-                "description": description,
+        })
 
-            }
-
-        )
+    print(f"Найдено результатов: {len(results)}")
 
     return results
 
@@ -231,7 +178,7 @@ def looks_like_yantar(item):
 
     ).lower()
 
-    good_words = [
+    brand_words = [
 
         "янтарь",
 
@@ -253,13 +200,21 @@ def looks_like_yantar(item):
 
         "clock",
 
+        "кварцев",
+
+        "quartz",
+
+        "банжо",
+
+        "banjo",
+
         "uhr",
 
         "zegar",
 
     ]
 
-    has_brand = any(word in text for word in good_words)
+    has_brand = any(word in text for word in brand_words)
 
     has_clock = any(word in text for word in clock_words)
 
@@ -267,7 +222,7 @@ def looks_like_yantar(item):
 
 def make_id(item):
 
-    raw = item["url"] + item["title"]
+    raw = item.get("url", "") + item.get("title", "")
 
     return hashlib.sha256(
 
@@ -275,111 +230,129 @@ def make_id(item):
 
     ).hexdigest()
 
-def main():
+def load_found():
 
-    if not BOT_TOKEN:
+    if not DATA_FILE.exists():
 
-        print("Ошибка: не найден TELEGRAM_BOT_TOKEN")
+        return set()
 
-        return
+    try:
 
-    if not CHAT_ID:
+        data = json.loads(
 
-        print("Ошибка: не найден TELEGRAM_CHAT_ID")
-
-        return
-
-    found = load_found()
-
-    new_items = []
-
-    print("Начинаю поиск часов Янтарь...")
-
-    for query in SEARCHES:
-
-        print(f"Поиск: {query}")
-
-        try:
-
-            results = search_web(query)
-
-        except Exception as error:
-
-            print(f"Ошибка поиска: {error}")
-
-            continue
-
-        for item in results:
-
-            if not looks_like_yantar(item):
-
-                continue
-
-            item_id = make_id(item)
-
-            if item_id in found:
-
-                continue
-
-            found[item_id] = {
-
-                "title": item["title"],
-
-                "url": item["url"],
-
-                "date": time.strftime("%Y-%m-%d %H:%M:%S"),
-
-            }
-
-            new_items.append(item)
-
-        time.sleep(2)
-
-    save_found(found)
-
-    if not new_items:
-
-        send_telegram(
-
-            "🕰 Проверка завершена.\n\n"
-
-            "Новых объявлений с часами «Янтарь» не найдено."
+            DATA_FILE.read_text(encoding="utf-8")
 
         )
 
-        print("Новых объявлений нет.")
+        return set(data)
 
-        return
+    except Exception:
 
-    send_telegram(
+        return set()
 
-        f"🕰 НАЙДЕНО НОВЫХ ОБЪЯВЛЕНИЙ: {len(new_items)}"
+def save_found(found):
+
+    DATA_FILE.write_text(
+
+        json.dumps(
+
+            sorted(found),
+
+            ensure_ascii=False,
+
+            indent=2,
+
+        ),
+
+        encoding="utf-8",
 
     )
 
-    for item in new_items[:10]:
+def main():
+
+    print("Начинаю поиск часов Янтарь...")
+
+    found = load_found()
+
+    all_results = []
+
+    for query in SEARCHES:
+
+        print(f'Поиск: "{query}"')
+
+        results = search_web(query)
+
+        for item in results:
+
+            if looks_like_yantar(item):
+
+                all_results.append(item)
+
+        time.sleep(1)
+
+    unique = {}
+
+    for item in all_results:
+
+        unique[make_id(item)] = item
+
+    new_items = []
+
+    for item_id, item in unique.items():
+
+        if item_id not in found:
+
+            new_items.append(item)
+
+    print(f"Всего подходящих результатов: {len(unique)}")
+
+    print(f"Новых объявлений: {len(new_items)}")
+
+    if new_items:
 
         message = (
 
-            "🕰 НОВАЯ НАХОДКА\n\n"
+            f"🕰 НАЙДЕНО НОВЫХ ОБЪЯВЛЕНИЙ: "
 
-            f"{item['title']}\n\n"
-
-            f"{item['description'][:500]}\n\n"
-
-            f"🔗 {item['url']}"
+            f"{len(new_items)}"
 
         )
 
-        try:
+        send_telegram(message)
 
-            send_telegram(message)
+        for item in new_items[:10]:
 
-        except Exception as error:
+            message = (
 
-            print(f"Ошибка Telegram: {error}")
+                "🕰 НОВАЯ НАХОДКА\n\n"
 
-        time.sleep(1)
+                f"{item['title']}\n\n"
+
+                f"{item['description'][:500]}\n\n"
+
+                f"🔗 {item['url']}"
+
+            )
+
+            try:
+
+                send_telegram(message)
+
+            except Exception as error:
+
+                print(f"Ошибка Telegram: {error}")
+
+            found.add(make_id(item))
+
+            time.sleep(1)
+
+    else:
+
+        print("Новых объявлений нет.")
+
+    save_found(found)
+
+    print("Поиск завершён.")
 
 if __name__ == "__main__":
 
