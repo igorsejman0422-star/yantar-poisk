@@ -6,209 +6,155 @@ import json
 
 import time
 
-import html
-
-import requests
+import hashlib
 
 from pathlib import Path
 
-from urllib.parse import quote, urlparse
+from urllib.parse import quote_plus
 
-# ==========================================
+import requests
+
+# ============================================================
 
 # НАСТРОЙКИ
 
-# ==========================================
+# ============================================================
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Telegram
 
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+CHAT_ID = os.getenv("CHAT_ID")
+
+# Файл, в котором будут храниться уже найденные объявления
+
+SEEN_FILE = "seen.json"
+
+# Сколько результатов брать по каждому запросу
+
+MAX_RESULTS = 10
+
+# Поисковые запросы
 
 SEARCH_QUERIES = [
 
-    "часы Янтарь",
-
-    "настенные часы Янтарь",
+    # Основной поиск
 
     "часы Янтарь банджо",
 
     "часы Янтарь банжо",
 
-    "Янтарь часы маятниковые",
+    "Янтарь часы банджо",
+
+    "Янтарь часы банжо",
+
+    # Возможные варианты написания
+
+    "часы Янтарь маятниковые",
+
+    "Янтарь настенные маятник",
+
+    "часы Янтарь необычная форма",
+
+    "часы Янтарь редкие",
+
+    # Поиск по конкретным российским площадкам
+
+    "site:avito.ru часы Янтарь банджо",
+
+    "site:meshok.net часы Янтарь банджо",
+
+    "site:youla.ru часы Янтарь",
+
+    "site:auction.ru часы Янтарь",
+
+    "site:festima.ru часы Янтарь банджо",
+
+    # Дополнительные варианты
+
+    "часы Янтарь СССР банджо",
+
+    "часы Янтарь кварцевые банджо",
+
+    "часы Янтарь настенные необычные СССР",
 
 ]
 
-SITES = {
+# ============================================================
 
-    "Авито": "site:avito.ru",
+# РАБОТА С СОХРАНЁННЫМИ ОБЪЯВЛЕНИЯМИ
 
-    "Мешок": "site:meshok.net",
-
-    "Юла": "site:youla.ru",
-
-    "FarPost": "site:farpost.ru",
-
-}
-
-SEEN_FILE = Path("seen_ads.json")
-
-HEADERS = {
-
-    "User-Agent": (
-
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-
-        "AppleWebKit/537.36 Chrome/120 Safari/537.36"
-
-    )
-
-}
-
-# ==========================================
-
-# РАБОТА С ПАМЯТЬЮ ПРОГРАММЫ
-
-# ==========================================
+# ============================================================
 
 def load_seen():
 
-    if SEEN_FILE.exists():
+    """Загружает список уже найденных объявлений."""
 
-        try:
+    if not os.path.exists(SEEN_FILE):
 
-            with open(SEEN_FILE, "r", encoding="utf-8") as file:
-
-                return set(json.load(file))
-
-        except Exception:
-
-            return set()
-
-    return set()
-
-def save_seen(seen):
-
-    with open(SEEN_FILE, "w", encoding="utf-8") as file:
-
-        json.dump(list(seen), file, ensure_ascii=False, indent=2)
-
-# ==========================================
-
-# ПОИСК ЧЕРЕЗ BING
-
-# ==========================================
-
-def search_bing(query):
-
-    url = "https://www.bing.com/search?q=" + quote(query)
+        return set()
 
     try:
 
-        response = requests.get(
+        with open(SEEN_FILE, "r", encoding="utf-8") as file:
 
-            url,
+            data = json.load(file)
 
-            headers=HEADERS,
-
-            timeout=20
-
-        )
-
-        response.raise_for_status()
-
-        text = response.text
+        return set(data)
 
     except Exception as error:
 
-        print("Ошибка поиска:", error)
+        print("Ошибка загрузки seen.json:", error)
 
-        return []
+        return set()
 
-    results = []
+def save_seen(seen):
 
-    pattern = re.compile(
+    """Сохраняет список уже найденных объявлений."""
 
-        r'<li class="b_algo".*?<h2><a href="(.*?)".*?>(.*?)</a>',
+    try:
 
-        re.DOTALL
+        with open(SEEN_FILE, "w", encoding="utf-8") as file:
 
-    )
+            json.dump(
 
-    matches = pattern.findall(text)
+                list(seen),
 
-    for link, title in matches:
+                file,
 
-        title = re.sub("<.*?>", "", title)
+                ensure_ascii=False,
 
-        title = html.unescape(title)
+                indent=2
 
-        link = html.unescape(link)
+            )
 
-        if link.startswith("http"):
+    except Exception as error:
 
-            results.append({
+        print("Ошибка сохранения seen.json:", error)
 
-                "title": title.strip(),
+# ============================================================
 
-                "url": link
+# TELEGRAM
 
-            })
-
-    return results
-
-# ==========================================
-
-# ПРОВЕРКА ССЫЛОК
-
-# ==========================================
-
-def is_valid_result(url):
-
-    bad_words = [
-
-        "bing.com",
-
-        "microsoft.com",
-
-        "account",
-
-        "login",
-
-        "support"
-
-    ]
-
-    domain = urlparse(url).netloc.lower()
-
-    for word in bad_words:
-
-        if word in domain:
-
-            return False
-
-    return True
-
-# ==========================================
-
-# ОТПРАВКА В TELEGRAM
-
-# ==========================================
+# ============================================================
 
 def send_telegram(message):
 
-    if not BOT_TOKEN or not CHAT_ID:
+    """Отправляет сообщение в Telegram."""
 
-        print("Не найдены настройки Telegram.")
+    if not BOT_TOKEN:
 
-        print(message)
+        print("BOT_TOKEN не найден")
 
         return
 
-    url = (
+    if not CHAT_ID:
 
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        print("CHAT_ID не найден")
 
-    )
+        return
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     data = {
 
@@ -232,119 +178,431 @@ def send_telegram(message):
 
         )
 
-        response.raise_for_status()
+        print("Telegram:", response.status_code)
 
     except Exception as error:
 
         print("Ошибка Telegram:", error)
 
-# ==========================================
+# ============================================================
 
-# ОСНОВНОЙ ПОИСК
+# ПОИСК
 
-# ==========================================
+# ============================================================
+
+def search_duckduckgo(query):
+
+    """
+
+    Ищет объявления через DuckDuckGo.
+
+    """
+
+    print()
+
+    print("=" * 60)
+
+    print("ПОИСК:", query)
+
+    print("=" * 60)
+
+    url = "https://html.duckduckgo.com/html/"
+
+    headers = {
+
+        "User-Agent": (
+
+            "Mozilla/5.0 "
+
+            "(iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+
+            "AppleWebKit/605.1.15 "
+
+            "Version/17.0 "
+
+            "Mobile/15E148 Safari/604.1"
+
+        )
+
+    }
+
+    try:
+
+        response = requests.post(
+
+            url,
+
+            data={
+
+                "q": query
+
+            },
+
+            headers=headers,
+
+            timeout=30
+
+        )
+
+        response.raise_for_status()
+
+        html_text = response.text
+
+    except Exception as error:
+
+        print("Ошибка поиска:", error)
+
+        return []
+
+    # --------------------------------------------------------
+
+    # Ищем ссылки
+
+    # --------------------------------------------------------
+
+    results = []
+
+    pattern = (
+
+        r'<a[^>]+class="result__a"'
+
+        r'[^>]+href="([^"]+)"'
+
+        r'[^>]*>(.*?)</a>'
+
+    )
+
+    matches = re.findall(
+
+        pattern,
+
+        html_text,
+
+        re.DOTALL
+
+    )
+
+    for link, title in matches:
+
+        # Убираем HTML-теги
+
+        title = re.sub(
+
+            r"<.*?>",
+
+            "",
+
+            title
+
+        )
+
+        title = title.strip()
+
+        # Пропускаем пустые результаты
+
+        if not title:
+
+            continue
+
+        results.append(
+
+            {
+
+                "title": title,
+
+                "url": link
+
+            }
+
+        )
+
+        if len(results) >= MAX_RESULTS:
+
+            break
+
+    return results
+
+# ============================================================
+
+# ПРОВЕРКА ПОДХОДЯЩЕГО ОБЪЯВЛЕНИЯ
+
+# ============================================================
+
+def is_interesting(title, url):
+
+    """
+
+    Проверяет, похоже ли объявление
+
+    на интересующие часы Янтарь.
+
+    """
+
+    text = (
+
+        title + " " + url
+
+    ).lower()
+
+    # Должно быть слово Янтарь
+
+    if "янтар" not in text:
+
+        return False
+
+    # Особо интересные слова
+
+    keywords = [
+
+        "банджо",
+
+        "банжо",
+
+        "маятник",
+
+        "маятников",
+
+        "настенн",
+
+        "кварц",
+
+        "редк",
+
+        "винтаж",
+
+        "ссср"
+
+    ]
+
+    for word in keywords:
+
+        if word in text:
+
+            return True
+
+    return False
+
+# ============================================================
+
+# СОЗДАНИЕ УНИКАЛЬНОГО ID
+
+# ============================================================
+
+def make_id(title, url):
+
+    text = (
+
+        title.strip().lower()
+
+        +
+
+        url.strip().lower()
+
+    )
+
+    return hashlib.md5(
+
+        text.encode("utf-8")
+
+    ).hexdigest()
+
+# ============================================================
+
+# ОСНОВНАЯ ПРОГРАММА
+
+# ============================================================
 
 def main():
 
-    print("Запуск поиска часов Янтарь...")
+    print()
+
+    print("ЗАПУСК ПОИСКА ЧАСОВ ЯНТАРЬ")
+
+    print()
 
     seen = load_seen()
 
+    print(
+
+        "Уже известных объявлений:",
+
+        len(seen)
+
+    )
+
     new_results = []
 
-    for site_name, site_query in SITES.items():
+    # --------------------------------------------------------
 
-        print(f"\nПоиск на сайте: {site_name}")
+    # Выполняем все поисковые запросы
 
-        for search_query in SEARCH_QUERIES:
+    # --------------------------------------------------------
 
-            full_query = (
+    for query in SEARCH_QUERIES:
 
-                f"{site_query} {search_query}"
+        results = search_duckduckgo(query)
+
+        print(
+
+            "Найдено результатов:",
+
+            len(results)
+
+        )
+
+        for item in results:
+
+            title = item["title"]
+
+            url = item["url"]
+
+            # Проверяем интересность
+
+            if not is_interesting(
+
+                title,
+
+                url
+
+            ):
+
+                continue
+
+            item_id = make_id(
+
+                title,
+
+                url
 
             )
 
-            print("Запрос:", full_query)
+            # Если уже отправляли — пропускаем
 
-            results = search_bing(full_query)
+            if item_id in seen:
 
-            for result in results:
+                print(
 
-                title = result["title"]
+                    "Уже было:",
 
-                url = result["url"]
+                    title
 
-                if not is_valid_result(url):
+                )
 
-                    continue
+                continue
 
-                if url in seen:
+            print(
 
-                    continue
+                "НОВОЕ:",
 
-                new_results.append({
+                title
 
-                    "site": site_name,
+            )
 
-                    "title": title,
+            seen.add(item_id)
 
-                    "url": url
+            new_results.append(
 
-                })
+                item
 
-                seen.add(url)
+            )
 
-            time.sleep(2)
+        # Небольшая пауза между запросами
+
+        time.sleep(2)
+
+    # --------------------------------------------------------
+
+    # Сохраняем найденные объявления
+
+    # --------------------------------------------------------
 
     save_seen(seen)
 
-    print(f"\nНайдено новых объявлений: {len(new_results)}")
+    # --------------------------------------------------------
+
+    # Отправляем результаты
+
+    # --------------------------------------------------------
 
     if not new_results:
 
-        print("Новых объявлений нет.")
+        message = (
+
+            "🔍 Поиск часов Янтарь завершён.\n\n"
+
+            "Новых подходящих объявлений "
+
+            "в этот раз не найдено."
+
+        )
+
+        print(message)
+
+        send_telegram(message)
 
         return
 
-    message = "🕰 НОВЫЕ НАХОДКИ ЯНТАРЬ\n\n"
+    # --------------------------------------------------------
 
-    for item in new_results:
+    # Формируем сообщение
+
+    # --------------------------------------------------------
+
+    message = (
+
+        "🕰 НАЙДЕНЫ НОВЫЕ ЧАСЫ ЯНТАРЬ\n\n"
+
+    )
+
+    for number, item in enumerate(
+
+        new_results,
+
+        start=1
+
+    ):
 
         message += (
 
-            f"📍 {item['site']}\n"
-
-            f"🕰 {item['title']}\n"
+            f"{number}. {item['title']}\n"
 
             f"{item['url']}\n\n"
 
         )
 
-    # Telegram ограничивает размер одного сообщения,
+    # Если сообщений слишком много —
 
-    # поэтому отправляем частями.
+    # Telegram может не принять длинный текст
 
-    max_length = 3500
+    if len(message) > 3500:
 
-    while message:
+        message = message[:3500]
 
-        part = message[:max_length]
+        message += (
 
-        if len(message) > max_length:
+            "\n\n⚠️ Сообщение сокращено."
 
-            last_break = part.rfind("\n\n")
+        )
 
-            if last_break > 0:
+    send_telegram(message)
 
-                part = part[:last_break]
+    print()
 
-        send_telegram(part)
+    print("ГОТОВО")
 
-        message = message[len(part):].lstrip()
+    print(
 
-        time.sleep(1)
+        "Новых объявлений:",
 
-    print("Новые объявления отправлены в Telegram.")
+        len(new_results)
+
+    )
+
+# ============================================================
+
+# ЗАПУСК
+
+# ============================================================
 
 if __name__ == "__main__":
 
