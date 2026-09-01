@@ -1,104 +1,106 @@
 import os
 
+import re
+
 import json
 
 import time
 
-import hashlib
-
-from pathlib import Path
-
-from urllib.parse import quote_plus
+import html
 
 import requests
 
-from bs4 import BeautifulSoup
+from pathlib import Path
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+from urllib.parse import quote, urlparse
 
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# ==========================================
 
-DATA_FILE = Path("found.json")
+# НАСТРОЙКИ
 
-SEARCHES = [
+# ==========================================
 
-    '"Янтарь банжо" часы',
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-    '"Янтарь" банжо часы купить',
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-    '"Янтарь" настенные часы СССР',
+SEARCH_QUERIES = [
 
-    '"Янтарь" кварцевые часы СССР',
+    "часы Янтарь",
 
-    '"Янтарь" часы СССР аукцион',
+    "настенные часы Янтарь",
 
-    '"Yantar" wall clock USSR',
+    "часы Янтарь банджо",
 
-    '"Yantar" banjo clock',
+    "часы Янтарь банжо",
 
-    '"Yantar" quartz wall clock',
-
-    '"Янтарь" часы купить',
-
-    '"Янтарь" часы коллекционные',
+    "Янтарь часы маятниковые",
 
 ]
 
-def send_telegram(text):
+SITES = {
 
-    if not BOT_TOKEN or not CHAT_ID:
+    "Авито": "site:avito.ru",
 
-        print("Ошибка: Telegram secrets не найдены")
+    "Мешок": "site:meshok.net",
 
-        return
+    "Юла": "site:youla.ru",
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    "FarPost": "site:farpost.ru",
 
-    response = requests.post(
+}
 
-        url,
+SEEN_FILE = Path("seen_ads.json")
 
-        json={
+HEADERS = {
 
-            "chat_id": CHAT_ID,
+    "User-Agent": (
 
-            "text": text,
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 
-            "disable_web_page_preview": False,
-
-        },
-
-        timeout=30,
+        "AppleWebKit/537.36 Chrome/120 Safari/537.36"
 
     )
 
-    response.raise_for_status()
+}
 
-    print("Сообщение отправлено в Telegram")
+# ==========================================
 
-def search_web(query):
+# РАБОТА С ПАМЯТЬЮ ПРОГРАММЫ
 
-    url = (
+# ==========================================
 
-        "https://html.duckduckgo.com/html/"
+def load_seen():
 
-        f"?q={quote_plus(query)}"
+    if SEEN_FILE.exists():
 
-    )
+        try:
 
-    headers = {
+            with open(SEEN_FILE, "r", encoding="utf-8") as file:
 
-        "User-Agent": (
+                return set(json.load(file))
 
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        except Exception:
 
-            "AppleWebKit/605.1.15 "
+            return set()
 
-            "Version/17.0 Mobile/15E148 Safari/604.1"
+    return set()
 
-        )
+def save_seen(seen):
 
-    }
+    with open(SEEN_FILE, "w", encoding="utf-8") as file:
+
+        json.dump(list(seen), file, ensure_ascii=False, indent=2)
+
+# ==========================================
+
+# ПОИСК ЧЕРЕЗ BING
+
+# ==========================================
+
+def search_bing(query):
+
+    url = "https://www.bing.com/search?q=" + quote(query)
 
     try:
 
@@ -106,9 +108,127 @@ def search_web(query):
 
             url,
 
-            headers=headers,
+            headers=HEADERS,
 
-            timeout=30,
+            timeout=20
+
+        )
+
+        response.raise_for_status()
+
+        text = response.text
+
+    except Exception as error:
+
+        print("Ошибка поиска:", error)
+
+        return []
+
+    results = []
+
+    pattern = re.compile(
+
+        r'<li class="b_algo".*?<h2><a href="(.*?)".*?>(.*?)</a>',
+
+        re.DOTALL
+
+    )
+
+    matches = pattern.findall(text)
+
+    for link, title in matches:
+
+        title = re.sub("<.*?>", "", title)
+
+        title = html.unescape(title)
+
+        link = html.unescape(link)
+
+        if link.startswith("http"):
+
+            results.append({
+
+                "title": title.strip(),
+
+                "url": link
+
+            })
+
+    return results
+
+# ==========================================
+
+# ПРОВЕРКА ССЫЛОК
+
+# ==========================================
+
+def is_valid_result(url):
+
+    bad_words = [
+
+        "bing.com",
+
+        "microsoft.com",
+
+        "account",
+
+        "login",
+
+        "support"
+
+    ]
+
+    domain = urlparse(url).netloc.lower()
+
+    for word in bad_words:
+
+        if word in domain:
+
+            return False
+
+    return True
+
+# ==========================================
+
+# ОТПРАВКА В TELEGRAM
+
+# ==========================================
+
+def send_telegram(message):
+
+    if not BOT_TOKEN or not CHAT_ID:
+
+        print("Не найдены настройки Telegram.")
+
+        print(message)
+
+        return
+
+    url = (
+
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+    )
+
+    data = {
+
+        "chat_id": CHAT_ID,
+
+        "text": message,
+
+        "disable_web_page_preview": False
+
+    }
+
+    try:
+
+        response = requests.post(
+
+            url,
+
+            data=data,
+
+            timeout=20
 
         )
 
@@ -116,243 +236,115 @@ def search_web(query):
 
     except Exception as error:
 
-        print(f"Ошибка поиска: {error}")
+        print("Ошибка Telegram:", error)
 
-        return []
+# ==========================================
 
-    soup = BeautifulSoup(response.text, "html.parser")
+# ОСНОВНОЙ ПОИСК
 
-    results = []
-
-    for item in soup.select(".result"):
-
-        link = item.select_one("a.result__a")
-
-        if not link:
-
-            continue
-
-        title = link.get_text(" ", strip=True)
-
-        href = link.get("href", "")
-
-        snippet = item.select_one(".result__snippet")
-
-        description = ""
-
-        if snippet:
-
-            description = snippet.get_text(" ", strip=True)
-
-        if not href or not title:
-
-            continue
-
-        results.append({
-
-            "title": title,
-
-            "url": href,
-
-            "description": description,
-
-        })
-
-    print(f"Найдено результатов: {len(results)}")
-
-    return results
-
-def looks_like_yantar(item):
-
-    text = (
-
-        item.get("title", "")
-
-        + " "
-
-        + item.get("description", "")
-
-        + " "
-
-        + item.get("url", "")
-
-    ).lower()
-
-    brand_words = [
-
-        "янтарь",
-
-        "yantar",
-
-        "yantarb",
-
-        "yantarь",
-
-    ]
-
-    clock_words = [
-
-        "часы",
-
-        "настенные",
-
-        "wall clock",
-
-        "clock",
-
-        "кварцев",
-
-        "quartz",
-
-        "банжо",
-
-        "banjo",
-
-        "uhr",
-
-        "zegar",
-
-    ]
-
-    has_brand = any(word in text for word in brand_words)
-
-    has_clock = any(word in text for word in clock_words)
-
-    return has_brand and has_clock
-
-def make_id(item):
-
-    raw = item.get("url", "") + item.get("title", "")
-
-    return hashlib.sha256(
-
-        raw.encode("utf-8")
-
-    ).hexdigest()
-
-def load_found():
-
-    if not DATA_FILE.exists():
-
-        return set()
-
-    try:
-
-        data = json.loads(
-
-            DATA_FILE.read_text(encoding="utf-8")
-
-        )
-
-        return set(data)
-
-    except Exception:
-
-        return set()
-
-def save_found(found):
-
-    DATA_FILE.write_text(
-
-        json.dumps(
-
-            sorted(found),
-
-            ensure_ascii=False,
-
-            indent=2,
-
-        ),
-
-        encoding="utf-8",
-
-    )
+# ==========================================
 
 def main():
 
-    print("Начинаю поиск часов Янтарь...")
+    print("Запуск поиска часов Янтарь...")
 
-    found = load_found()
+    seen = load_seen()
 
-    all_results = []
+    new_results = []
 
-    for query in SEARCHES:
+    for site_name, site_query in SITES.items():
 
-        print(f'Поиск: "{query}"')
+        print(f"\nПоиск на сайте: {site_name}")
 
-        results = search_web(query)
+        for search_query in SEARCH_QUERIES:
 
-        for item in results:
+            full_query = (
 
-            if looks_like_yantar(item):
-
-                all_results.append(item)
-
-        time.sleep(1)
-
-    unique = {}
-
-    for item in all_results:
-
-        unique[make_id(item)] = item
-
-    new_items = []
-
-    for item_id, item in unique.items():
-
-        if item_id not in found:
-
-            new_items.append(item)
-
-    print(f"Всего подходящих результатов: {len(unique)}")
-
-    print(f"Новых объявлений: {len(new_items)}")
-
-    if new_items:
-
-        message = (
-
-            f"🕰 НАЙДЕНО НОВЫХ ОБЪЯВЛЕНИЙ: "
-
-            f"{len(new_items)}"
-
-        )
-
-        send_telegram(message)
-
-        for item in new_items[:10]:
-
-            message = (
-
-                "🕰 НОВАЯ НАХОДКА\n\n"
-
-                f"{item['title']}\n\n"
-
-                f"{item['description'][:500]}\n\n"
-
-                f"🔗 {item['url']}"
+                f"{site_query} {search_query}"
 
             )
 
-            try:
+            print("Запрос:", full_query)
 
-                send_telegram(message)
+            results = search_bing(full_query)
 
-            except Exception as error:
+            for result in results:
 
-                print(f"Ошибка Telegram: {error}")
+                title = result["title"]
 
-            found.add(make_id(item))
+                url = result["url"]
 
-            time.sleep(1)
+                if not is_valid_result(url):
 
-    else:
+                    continue
+
+                if url in seen:
+
+                    continue
+
+                new_results.append({
+
+                    "site": site_name,
+
+                    "title": title,
+
+                    "url": url
+
+                })
+
+                seen.add(url)
+
+            time.sleep(2)
+
+    save_seen(seen)
+
+    print(f"\nНайдено новых объявлений: {len(new_results)}")
+
+    if not new_results:
 
         print("Новых объявлений нет.")
 
-    save_found(found)
+        return
 
-    print("Поиск завершён.")
+    message = "🕰 НОВЫЕ НАХОДКИ ЯНТАРЬ\n\n"
+
+    for item in new_results:
+
+        message += (
+
+            f"📍 {item['site']}\n"
+
+            f"🕰 {item['title']}\n"
+
+            f"{item['url']}\n\n"
+
+        )
+
+    # Telegram ограничивает размер одного сообщения,
+
+    # поэтому отправляем частями.
+
+    max_length = 3500
+
+    while message:
+
+        part = message[:max_length]
+
+        if len(message) > max_length:
+
+            last_break = part.rfind("\n\n")
+
+            if last_break > 0:
+
+                part = part[:last_break]
+
+        send_telegram(part)
+
+        message = message[len(part):].lstrip()
+
+        time.sleep(1)
+
+    print("Новые объявления отправлены в Telegram.")
 
 if __name__ == "__main__":
 
